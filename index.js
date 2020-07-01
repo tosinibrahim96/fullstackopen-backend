@@ -1,118 +1,107 @@
+require("dotenv").config();
 const express = require("express");
 const app = express();
 const morgan = require("morgan");
-morgan.token("newContact", (req) => JSON.stringify(req.body));
-const cors = require('cors')
+const cors = require("cors");
+const Contact = require("./models/Contact");
 
-app.use(cors())
+morgan.token("newContact", (req) => JSON.stringify(req.body));
+
+app.use(cors());
 app.use(express.json());
 app.use(morgan(":method :url :status :newContact"));
-app.use(express.static('build'))
-
-let contacts = [
-  {
-    name: "Arto Hellas",
-    number: "040-123456",
-    id: 1,
-  },
-  {
-    name: "Ada Lovelace",
-    number: "39-44-5323523",
-    id: 2,
-  },
-  {
-    name: "Dan Abramov",
-    number: "12-43-234345",
-    id: 3,
-  },
-  {
-    name: "Mary Poppendieck",
-    number: "39-23-6423122",
-    id: 4,
-  },
-  {
-    name: "asa",
-    number: "07098564321",
-    id: 5,
-  },
-];
+app.use(express.static("build"));
 
 app.get("/", (req, res) => {
   res.send("<h1>Hello World!</h1>");
 });
 
-app.get("/api/contacts", (req, res) => {
-  res.json(contacts);
-});
-
-app.get("/api/contacts/:id", (request, response) => {
-  const id = Number(request.params.id);
-  const contact = contacts.find((contact) => contact.id === id);
-
-  if (contact) {
-    response.json(contact);
-  } else {
-    response.status(404).end();
-  }
-});
-
-app.delete("/api/contacts/:id", (request, response) => {
-  const id = Number(request.params.id);
-  contacts = contacts.filter((contact) => contact.id !== id);
-
-  response.status(204).end();
-});
-
-const generateId = () => {
-  let id = Math.floor(Math.random() * 100000000000) + 1;
-  //create new array with all contacts id, then check if the one we just created
-  // also exists
-  return contacts.map((contact) => contact.id).includes(id)
-    ? response.status(400).json({
-        error: "Error while creating. Please try again",
-      })
-    : id;
-};
-
-const nameAlreadyExist = (newName) => {
-  const lowerCaseSpacelessName = newName.toLowerCase().replace(/ /g, "");
-
-  return contacts.find(
-    (contact) =>
-      lowerCaseSpacelessName === contact.name.toLowerCase().replace(/ /g, "")
-  );
-};
-
-app.post("/api/contacts", (request, response) => {
+app.post("/api/contacts", (request, response, next) => {
   const body = request.body;
 
-  if (!body.name) {
-    return response.status(400).json({
-      error: "name missing",
-    });
+  if (!body.name || !body.number) {
+    return response.status(400).json({ error: "content missing" });
   }
 
-  if (!body.number) {
-    return response.status(400).json({
-      error: "number missing in request",
-    });
-  }
+  Contact.findOne({ name: body.name })
+    .then((contact) => {
+      if (contact) {
+        request.url = `/api/contacts/${contact.id}`;
+        request.method = "PUT";
 
-  if (nameAlreadyExist(body.name)) {
-    return response.status(400).json({
-      error: "Sorry, name already exist",
-    });
+        app.handle(request, response, next);
+      } else {
+        const contact = new Contact({
+          name: body.name,
+          number: body.number,
+        });
+
+        contact
+          .save()
+          .then((newContact) => {
+            response.json(newContact);
+          })
+          .catch((error) => next(error));
+      }
+    })
+    .catch((error) => next(error));
+});
+
+app.get("/api/contacts", (req, res) => {
+  Contact.find({})
+    .then((contacts) => {
+      res.json(contacts);
+    })
+    .catch((error) => next(error));
+});
+
+app.get("/api/contacts/:id", (request, response, next) => {
+  Contact.findById(request.params.id)
+    .then((contact) => {
+      if (contact) {
+        response.json(contact);
+      } else {
+        response.status(404).json({ error: "contact not found" });
+      }
+    })
+    .catch((error) => next(error));
+});
+
+app.put("/api/contacts/:id", (request, response) => {
+  const body = request.body;
+
+  console.log(body);
+
+  if (!body.name || !body.number) {
+    return response.status(400).json({ error: "content missing" });
   }
 
   const contact = {
     name: body.name,
     number: body.number,
-    date: new Date(),
-    id: generateId(),
   };
 
-  contacts.push(contact);
-  response.json(contact);
+  Contact.findByIdAndUpdate(request.params.id, contact, { new: true })
+    .then((updatedContact) => {
+      if (updatedContact) {
+        response.status(200).json(updatedContact);
+      } else {
+        response.status(404).json({ error: "contact not found" });
+      }
+    })
+    .catch((error) => next(error));
+});
+
+app.delete("/api/contacts/:id", (request, response) => {
+  Contact.findByIdAndRemove(request.params.id)
+    .then((contact) => {
+      if (contact) {
+        response.status(204).end();
+      } else {
+        response.status(404).json({ error: "contact not found" });
+      }
+    })
+    .catch((error) => next(error));
 });
 
 app.get("/info", (req, res) => {
@@ -125,7 +114,26 @@ app.get("/info", (req, res) => {
            </div>`);
 });
 
-const PORT = process.env.PORT || 3001;
+const unknownEndpoint = (request, response) => {
+  response.status(404).send({ error: "unknown endpoint" });
+};
+
+// handler of requests with unknown endpoint
+app.use(unknownEndpoint);
+
+const errorHandler = (error, request, response, next) => {
+  console.error(error.message);
+
+  if (error.name === "CastError") {
+    return response.status(400).send({ error: "malformatted id" });
+  }
+
+  next(error);
+};
+// handler of requests with result to errors
+app.use(errorHandler);
+
+const PORT = process.env.PORT;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
